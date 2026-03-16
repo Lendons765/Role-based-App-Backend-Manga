@@ -1,860 +1,631 @@
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
+// Auto-detect: if opened via localhost:3000 directly, use same origin; otherwise point to :3000
+const API_BASE = (window.location.port === '3000') ? '' : 'http://localhost:3000';
 let currentUser = null;
-const STORAGE_KEY = 'iptdemov1';
 
-// Database structure
-window.db = {
-    accounts: [],
-    departments: [],
-    employees: [],
-    requests: []
-};
-
-// Initialize app
-document.addEventListener('DOMContentLoaded', function() {
-    loadFromStorage();
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
-   
-    // Set initial hash if empty
-    if (!window.location.hash) {
-        window.location.hash = '#/';
+    if (!window.location.hash) window.location.hash = '#/';
+
+    const token = sessionStorage.getItem('authToken');
+    if (token) {
+        const decoded = decodeJWT(token);
+        if (decoded && decoded.exp * 1000 > Date.now()) {
+            currentUser = JSON.parse(sessionStorage.getItem('authUser') || 'null');
+            if (currentUser) setAuthState(true, currentUser);
+        } else {
+            clearSession();
+        }
     }
-   
     handleRouting();
 });
 
-// Event listeners
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function decodeJWT(token) {
+    try {
+        return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    } catch { return null; }
+}
+
+function getAuthHeader() {
+    const token = sessionStorage.getItem('authToken');
+    return token ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+                 : { 'Content-Type': 'application/json' };
+}
+
+async function api(method, path, body) {
+    try {
+        const res = await fetch(`${API_BASE}${path}`, {
+            method,
+            headers: getAuthHeader(),
+            body: body ? JSON.stringify(body) : undefined
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+        return data;
+    } catch (err) {
+        if (err.message === 'Failed to fetch')
+            throw new Error('Network error — is the backend running on port 3000?');
+        throw err;
+    }
+}
+
+function clearSession() {
+    sessionStorage.removeItem('authToken');
+    sessionStorage.removeItem('authUser');
+    currentUser = null;
+}
+
+// ─── EVENT LISTENERS ──────────────────────────────────────────────────────────
 function setupEventListeners() {
     window.addEventListener('hashchange', handleRouting);
-   
-    // Register form
-    document.getElementById('register-form')?.addEventListener('submit', handleRegister);
-   
-    // Login form
-    document.getElementById('login-form')?.addEventListener('submit', handleLogin);
-   
-    // Account form
-    document.getElementById('account-form')?.addEventListener('submit', handleAccountSave);
-   
-    // Employee form
-    document.getElementById('employee-form')?.addEventListener('submit', handleEmployeeSave);
-   
-    // Request form
-    document.getElementById('request-form')?.addEventListener('submit', handleRequestSubmit);
+    document.getElementById('register-form')  ?.addEventListener('submit', handleRegister);
+    document.getElementById('login-form')     ?.addEventListener('submit', handleLogin);
+    document.getElementById('profile-form')   ?.addEventListener('submit', handleProfileUpdate);
+    document.getElementById('account-form')   ?.addEventListener('submit', handleAccountSave);
+    document.getElementById('dept-form')      ?.addEventListener('submit', handleDeptSave);
+    document.getElementById('employee-form')  ?.addEventListener('submit', handleEmployeeSave);
+    document.getElementById('request-form')   ?.addEventListener('submit', handleRequestSubmit);
 }
 
-// Storage functions
-function loadFromStorage() {
-    try {
-        const data = localStorage.getItem(STORAGE_KEY);
-        if (data) {
-            window.db = JSON.parse(data);
-        } else {
-            seedData();
-        }
-    } catch (e) {
-        console.error('Error loading from storage:', e);
-        seedData();
-    }
-   
-    // Check for existing auth
-    const authToken = localStorage.getItem('authtoken');
-    if (authToken) {
-        const user = window.db.accounts.find(acc => acc.email === authToken);
-        if (user && user.verified) {
-            setAuthState(true, user);
-        }
-    }
-}
-
-function saveToStorage() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(window.db));
-}
-
-function seedData() {
-    window.db = {
-        accounts: [
-            {
-                id: generateId(),
-                firstName: 'Admin',
-                lastName: 'User',
-                email: 'admin@example.com',
-                password: 'Password123!',
-                role: 'admin',
-                verified: true
-            },
-            {
-                id: generateId(),
-                firstName: 'Regular',
-                lastName: 'User',
-                email: 'user@example.com',
-                password: 'Password123!',
-                role: 'user',
-                verified: true
-            }
-        ],
-        departments: [
-            {
-                id: generateId(),
-                name: 'Engineering',
-                description: 'Software development and IT'
-            },
-            {
-                id: generateId(),
-                name: 'Human Resources',
-                description: 'HR and employee management'
-            }
-        ],
-        employees: [],
-        requests: []
-    };
-    saveToStorage();
-}
-
-function generateId() {
-    return 'id_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-}
-
-// Routing
-function navigateTo(hash) {
-    window.location.hash = hash;
-}
+// ─── ROUTING ──────────────────────────────────────────────────────────────────
+function navigateTo(hash) { window.location.hash = hash; }
 
 function handleRouting() {
-    const hash = window.location.hash || '#/';
-    const route = hash.substring(2); // Remove '#/'
-   
-    // Hide all pages
-    document.querySelectorAll('.page').forEach(page => {
-        page.classList.remove('active');
-    });
-   
-    // Protected routes
+    const route = (window.location.hash || '#/').substring(2);
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+
     const protectedRoutes = ['profile', 'requests'];
     const adminRoutes = ['admin/accounts', 'admin/departments', 'admin/employees', 'admin/requests'];
-   
+
     if (protectedRoutes.some(r => route.startsWith(r)) && !currentUser) {
-        navigateTo('#/login');
-        showToast('Please login to access this page', 'warning');
-        return;
+        navigateTo('#/login'); showToast('Please login first', 'warning'); return;
     }
-   
     if (adminRoutes.some(r => route.startsWith(r))) {
-        if (!currentUser) {
-            navigateTo('#/login');
-            showToast('Please login to access this page', 'warning');
-            return;
-        }
-        if (currentUser.role !== 'admin') {
-            navigateTo('#/');
-            showToast('Access denied. Admin only.', 'danger');
-            return;
-        }
+        if (!currentUser) { navigateTo('#/login'); showToast('Please login first', 'warning'); return; }
+        if (currentUser.role !== 'admin') { navigateTo('#/'); showToast('Admin access only', 'danger'); return; }
     }
-   
-    // Show appropriate page
-    switch(route) {
-        case '':
-            document.getElementById('home-page').classList.add('active');
-            break;
-        case 'register':
-            document.getElementById('register-page').classList.add('active');
-            break;
-        case 'verify':
-            document.getElementById('verify-page').classList.add('active');
-            const email = localStorage.getItem('unverifiedemail');
-            document.getElementById('verify-email-display').textContent = email;
-            break;
-        case 'login':
-            document.getElementById('login-page').classList.add('active');
-            break;
-        case 'profile':
-            document.getElementById('profile-page').classList.add('active');
-            renderProfile();
-            break;
-        case 'requests':
-            document.getElementById('requests-page').classList.add('active');
-            renderRequests();
-            break;
-        case 'admin/accounts':
-            document.getElementById('admin-accounts-page').classList.add('active');
-            renderAccountsList();
-            break;
-        case 'admin/departments':
-            document.getElementById('admin-departments-page').classList.add('active');
-            renderDepartmentsList();
-            break;
-        case 'admin/employees':
-            document.getElementById('admin-employees-page').classList.add('active');
-            renderEmployeesList();
-            break;
-        case 'admin/requests':
-            document.getElementById('admin-requests-page').classList.add('active');
-            renderAdminRequestsList();
-            break;
-        default:
-            document.getElementById('home-page').classList.add('active');
-    }
-}
 
-// Authentication
-function handleRegister(e) {
-    e.preventDefault();
-   
-    const firstName = document.getElementById('reg-firstname').value;
-    const lastName = document.getElementById('reg-lastname').value;
-    const email = document.getElementById('reg-email').value;
-    const password = document.getElementById('reg-password').value;
-   
-    // Check if email exists
-    if (window.db.accounts.find(acc => acc.email === email)) {
-        showToast('Email already exists', 'danger');
-        return;
-    }
-   
-    // Create account
-    const newAccount = {
-        id: generateId(),
-        firstName,
-        lastName,
-        email,
-        password,
-        role: 'user',
-        verified: false
+    const map = {
+        '': 'home-page', 'register': 'register-page', 'verify': 'verify-page',
+        'login': 'login-page', 'profile': 'profile-page', 'requests': 'requests-page',
+        'admin/accounts': 'admin-accounts-page', 'admin/departments': 'admin-departments-page',
+        'admin/employees': 'admin-employees-page', 'admin/requests': 'admin-requests-page'
     };
-   
-    window.db.accounts.push(newAccount);
-    saveToStorage();
-   
-    localStorage.setItem('unverifiedemail', email);
-    navigateTo('#/verify');
-    showToast('Account created! Please verify your email.', 'success');
+
+    const pageId = map[route] || 'home-page';
+    document.getElementById(pageId)?.classList.add('active');
+
+    if (route === 'verify')            setupVerifyPage();
+    if (route === 'profile')           renderProfile();
+    if (route === 'requests')          loadUserRequests();
+    if (route === 'admin/accounts')    loadAdminAccounts();
+    if (route === 'admin/departments') loadAdminDepartments();
+    if (route === 'admin/employees')   loadAdminEmployees();
+    if (route === 'admin/requests')    loadAdminRequests();
 }
 
-function simulateEmailVerification() {
-    const email = localStorage.getItem('unverifiedemail');
-    const account = window.db.accounts.find(acc => acc.email === email);
-   
-    if (account) {
-        account.verified = true;
-        saveToStorage();
-        localStorage.removeItem('unverifiedemail');
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+async function handleRegister(e) {
+    e.preventDefault();
+    const firstName = document.getElementById('reg-firstname').value.trim();
+    const lastName  = document.getElementById('reg-lastname').value.trim();
+    const username  = document.getElementById('reg-email').value.trim();
+    const password  = document.getElementById('reg-password').value;
+    try {
+        await api('POST', '/api/register', { firstName, lastName, username, password });
+        sessionStorage.setItem('unverifiedUser', username);
+        navigateTo('#/verify');
+        showToast('Account created! Please verify.', 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+function setupVerifyPage() {
+    const u = sessionStorage.getItem('unverifiedUser') || '';
+    document.getElementById('verify-email-display').textContent = u;
+}
+
+async function simulateEmailVerification() {
+    const username = sessionStorage.getItem('unverifiedUser');
+    if (!username) { showToast('No pending verification', 'danger'); return; }
+    try {
+        await api('POST', '/api/verify', { username });
+        sessionStorage.removeItem('unverifiedUser');
         navigateTo('#/login');
         showToast('Email verified! You can now login.', 'success');
-    }
+    } catch (err) { showToast(err.message, 'danger'); }
 }
 
-function handleLogin(e) {
+async function handleLogin(e) {
     e.preventDefault();
-   
-    const email = document.getElementById('login-email').value;
+    const username = document.getElementById('login-email').value.trim();
     const password = document.getElementById('login-password').value;
-   
-    const account = window.db.accounts.find(acc =>
-        acc.email === email &&
-        acc.password === password &&
-        acc.verified === true
-    );
-   
-    if (account) {
-        localStorage.setItem('authtoken', email);
-        setAuthState(true, account);
+    try {
+        const data = await api('POST', '/api/login', { username, password });
+        sessionStorage.setItem('authToken', data.token);
+        const decoded = decodeJWT(data.token);
+        const user = { ...data.user, role: decoded?.role || data.user.role };
+        sessionStorage.setItem('authUser', JSON.stringify(user));
+        setAuthState(true, user);
         navigateTo('#/profile');
-        showToast(`Welcome back, ${account.firstName}!`, 'success');
-    } else {
-        showToast('Invalid credentials or email not verified', 'danger');
-    }
+        showToast(`Welcome back, ${user.firstName || user.username}!`, 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
 }
 
 function setAuthState(isAuth, user = null) {
     currentUser = user;
-    const body = document.body;
-   
-    if (isAuth && user) {
-        body.classList.remove('not-authenticated');
-        body.classList.add('authenticated');
-       
-        if (user.role === 'admin') {
-            body.classList.add('is-admin');
-        } else {
-            body.classList.remove('is-admin');
-        }
-    } else {
-        body.classList.remove('authenticated', 'is-admin');
-        body.classList.add('not-authenticated');
-    }
+    document.body.classList.toggle('not-authenticated', !isAuth);
+    document.body.classList.toggle('authenticated', isAuth);
+    document.body.classList.toggle('is-admin', isAuth && user?.role === 'admin');
 }
 
 function logout() {
-    localStorage.removeItem('authtoken');
+    clearSession();
     setAuthState(false);
     navigateTo('#/');
-    showToast('Logged out successfully', 'info');
+    showToast('Logged out', 'info');
 }
 
-// Profile rendering
-function renderProfile() {
+// ─── PROFILE ──────────────────────────────────────────────────────────────────
+async function renderProfile() {
     if (!currentUser) return;
-   
-    const html = `
-        <div class="profile-info">
-            <div class="row">
-                <div class="col-12">
-                    <strong>Name:</strong> ${currentUser.firstName} ${currentUser.lastName}
+    try {
+        const user = await api('GET', '/api/profile');
+        // Update stored user with latest from server
+        currentUser = { ...currentUser, ...user };
+        sessionStorage.setItem('authUser', JSON.stringify(currentUser));
+
+        document.getElementById('profile-content').innerHTML = `
+            <div class="profile-info">
+                <div class="profile-row"><span class="profile-label">Name</span><span>${user.firstName} ${user.lastName}</span></div>
+                <div class="profile-row"><span class="profile-label">Username</span><span>${user.username}</span></div>
+                <div class="profile-row">
+                    <span class="profile-label">Role</span>
+                    <span class="badge ${user.role === 'admin' ? 'bg-danger' : 'bg-primary'}">${user.role.toUpperCase()}</span>
+                </div>
+                <div class="profile-row">
+                    <span class="profile-label">Status</span>
+                    <span class="badge bg-success">Verified</span>
                 </div>
             </div>
-            <div class="row">
-                <div class="col-12">
-                    <strong>Email:</strong> ${currentUser.email}
+            <hr style="margin:20px 0; border-color: var(--border)">
+            <h6 style="font-weight:600; margin-bottom:16px">Edit Profile</h6>
+            <form id="profile-form">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">First Name</label>
+                        <input type="text" class="form-control" id="edit-firstname" value="${user.firstName}">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Last Name</label>
+                        <input type="text" class="form-control" id="edit-lastname" value="${user.lastName}">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Current Password <small class="text-muted">(required to change password)</small></label>
+                        <input type="password" class="form-control" id="edit-current-pw" placeholder="Enter current password">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">New Password <small class="text-muted">(leave blank to keep current)</small></label>
+                        <input type="password" class="form-control" id="edit-new-pw" placeholder="Enter new password">
+                    </div>
+                    <div class="col-12">
+                        <button type="submit" class="btn btn-primary">Save Changes</button>
+                    </div>
                 </div>
-            </div>
-            <div class="row">
-                <div class="col-12">
-                    <strong>Role:</strong> <span class="badge ${currentUser.role === 'admin' ? 'bg-danger' : 'bg-primary'}">${currentUser.role.toUpperCase()}</span>
-                </div>
-            </div>
-            <div class="row">
-                <div class="col-12">
-                    <strong>Status:</strong> <span class="badge bg-success">Verified</span>
-                </div>
-            </div>
-            <div class="row mt-3">
-                <div class="col-12">
-                    <button class="btn btn-primary" onclick="alert('Edit profile not yet implemented')">Edit Profile</button>
-                </div>
-            </div>
-        </div>
-    `;
-   
-    document.getElementById('profile-content').innerHTML = html;
+            </form>
+        `;
+        // Re-attach after innerHTML replacement
+        document.getElementById('profile-form').addEventListener('submit', handleProfileUpdate);
+    } catch (err) { showToast(err.message, 'danger'); }
 }
 
-// Requests management
-function renderRequests() {
-    if (!currentUser) return;
-   
-    const userRequests = window.db.requests.filter(req => req.employeeEmail === currentUser.email);
-   
-    if (userRequests.length === 0) {
-        document.getElementById('requests-list').innerHTML = `
-            <div class="alert alert-info">No requests yet. Click "+ New Request" to create one.</div>
-        `;
-        return;
-    }
-   
-    let html = `
-        <div class="table-responsive">
-            <table class="table table-striped">
-                <thead>
-                    <tr>
-                        <th>Type</th>
-                        <th>Items</th>
-                        <th>Date</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-    `;
-   
-    userRequests.forEach(req => {
-        const statusClass = req.status === 'Pending' ? 'warning' :
-                          req.status === 'Approved' ? 'success' : 'danger';
-        const itemsList = req.items.map(item => `${item.name} (${item.qty})`).join(', ');
-       
-        html += `
-            <tr>
-                <td>${req.type}</td>
-                <td>${itemsList}</td>
-                <td>${new Date(req.date).toLocaleDateString()}</td>
-                <td><span class="badge bg-${statusClass}">${req.status}</span></td>
-            </tr>
-        `;
-    });
-   
-    html += '</tbody></table></div>';
-    document.getElementById('requests-list').innerHTML = html;
+async function handleProfileUpdate(e) {
+    e.preventDefault();
+    const body = {
+        firstName:       document.getElementById('edit-firstname').value.trim(),
+        lastName:        document.getElementById('edit-lastname').value.trim(),
+        currentPassword: document.getElementById('edit-current-pw').value,
+        newPassword:     document.getElementById('edit-new-pw').value
+    };
+    if (!body.newPassword) { delete body.currentPassword; delete body.newPassword; }
+    try {
+        const data = await api('PUT', '/api/profile', body);
+        currentUser = { ...currentUser, ...data.user };
+        sessionStorage.setItem('authUser', JSON.stringify(currentUser));
+        showToast('Profile updated!', 'success');
+        renderProfile();
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+// ─── USER: MY REQUESTS ────────────────────────────────────────────────────────
+async function loadUserRequests() {
+    try {
+        const list = await api('GET', '/api/requests');
+        const el   = document.getElementById('requests-list');
+        if (!list.length) {
+            el.innerHTML = `<div class="alert alert-info">No requests yet. Click "+ New Request" to create one.</div>`;
+            return;
+        }
+        el.innerHTML = `
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead><tr><th>Type</th><th>Items</th><th>Date</th><th>Status</th></tr></thead>
+                    <tbody>
+                        ${list.map(r => `
+                            <tr>
+                                <td>${r.type}</td>
+                                <td>${r.items.map(i => `${i.name} (${i.qty})`).join(', ')}</td>
+                                <td>${new Date(r.date).toLocaleDateString()}</td>
+                                <td><span class="badge bg-${statusColor(r.status)}">${r.status}</span></td>
+                            </tr>`).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+    } catch (err) { showToast(err.message, 'danger'); }
 }
 
 function openNewRequestModal() {
-    // Reset form
     document.getElementById('request-form').reset();
-    document.getElementById('request-items-container').innerHTML = `
-        <div class="row mb-2 request-item">
-            <div class="col-7">
-                <input type="text" class="form-control item-name" placeholder="Item name" required>
-            </div>
-            <div class="col-3">
-                <input type="number" class="form-control item-qty" placeholder="Qty" min="1" required>
-            </div>
-            <div class="col-2">
-                <button type="button" class="btn btn-sm btn-danger" onclick="removeRequestItem(this)" disabled>×</button>
-            </div>
-        </div>
-    `;
-   
-    const modal = new bootstrap.Modal(document.getElementById('requestModal'));
-    modal.show();
+    document.getElementById('request-items-container').innerHTML = itemRowHTML(true);
+    new bootstrap.Modal(document.getElementById('requestModal')).show();
+}
+
+function itemRowHTML(disabled = false) {
+    return `<div class="row mb-2 request-item">
+        <div class="col-7"><input type="text" class="form-control item-name" placeholder="Item name" required></div>
+        <div class="col-3"><input type="number" class="form-control item-qty" placeholder="Qty" min="1" required></div>
+        <div class="col-2"><button type="button" class="btn btn-sm btn-danger" onclick="removeRequestItem(this)" ${disabled ? 'disabled' : ''}>×</button></div>
+    </div>`;
 }
 
 function addRequestItem() {
-    const container = document.getElementById('request-items-container');
-    const newItem = document.createElement('div');
-    newItem.className = 'row mb-2 request-item';
-    newItem.innerHTML = `
-        <div class="col-7">
-            <input type="text" class="form-control item-name" placeholder="Item name" required>
-        </div>
-        <div class="col-3">
-            <input type="number" class="form-control item-qty" placeholder="Qty" min="1" required>
-        </div>
-        <div class="col-2">
-            <button type="button" class="btn btn-sm btn-danger" onclick="removeRequestItem(this)">×</button>
-        </div>
-    `;
-    container.appendChild(newItem);
+    const div = document.createElement('div');
+    div.innerHTML = itemRowHTML();
+    document.getElementById('request-items-container').appendChild(div.firstElementChild);
 }
 
-function removeRequestItem(btn) {
-    btn.closest('.request-item').remove();
-}
+function removeRequestItem(btn) { btn.closest('.request-item').remove(); }
 
-function handleRequestSubmit(e) {
+async function handleRequestSubmit(e) {
     e.preventDefault();
-   
-    const type = document.getElementById('request-type').value;
-    const itemElements = document.querySelectorAll('.request-item');
-    const items = [];
-   
-    itemElements.forEach(elem => {
-        const name = elem.querySelector('.item-name').value;
-        const qty = elem.querySelector('.item-qty').value;
-        if (name && qty) {
-            items.push({ name, qty: parseInt(qty) });
-        }
-    });
-   
-    if (items.length === 0) {
-        showToast('Please add at least one item', 'warning');
-        return;
+    const type  = document.getElementById('request-type').value;
+    const items = [...document.querySelectorAll('.request-item')].map(el => ({
+        name: el.querySelector('.item-name').value,
+        qty:  parseInt(el.querySelector('.item-qty').value)
+    })).filter(i => i.name && i.qty);
+
+    if (!items.length) { showToast('Add at least one item', 'warning'); return; }
+    try {
+        await api('POST', '/api/requests', { type, items });
+        bootstrap.Modal.getInstance(document.getElementById('requestModal')).hide();
+        loadUserRequests();
+        showToast('Request submitted!', 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+// ─── ADMIN: ACCOUNTS ──────────────────────────────────────────────────────────
+async function loadAdminAccounts() {
+    try {
+        const list = await api('GET', '/api/admin/accounts');
+        document.getElementById('accounts-list').innerHTML = `
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Verified</th><th>Actions</th></tr></thead>
+                    <tbody>
+                        ${list.map(a => `
+                            <tr>
+                                <td>${a.firstName} ${a.lastName}</td>
+                                <td>${a.username}</td>
+                                <td><span class="badge ${a.role === 'admin' ? 'bg-danger' : 'bg-primary'}">${a.role}</span></td>
+                                <td>${a.verified ? '<span class="badge bg-success">✓</span>' : '<span class="badge bg-secondary">—</span>'}</td>
+                                <td class="action-buttons">
+                                    <button class="btn btn-sm btn-primary"  onclick="openAccountModal(${a.id})">Edit</button>
+                                    <button class="btn btn-sm btn-warning"  onclick="openResetPwModal(${a.id})">Reset PW</button>
+                                    <button class="btn btn-sm btn-danger"   onclick="deleteAccount(${a.id})">Delete</button>
+                                </td>
+                            </tr>`).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+function openAccountModal(id = null) {
+    document.getElementById('account-form').reset();
+    document.getElementById('account-id').value = '';
+    document.getElementById('accountModalTitle').textContent = id ? 'Edit Account' : 'Add Account';
+    document.getElementById('account-password').required = !id;
+
+    if (id) {
+        api('GET', '/api/admin/accounts').then(list => {
+            const a = list.find(x => x.id === id);
+            if (!a) return;
+            document.getElementById('account-id').value        = a.id;
+            document.getElementById('account-firstname').value = a.firstName;
+            document.getElementById('account-lastname').value  = a.lastName;
+            document.getElementById('account-username').value  = a.username;
+            document.getElementById('account-role').value      = a.role;
+            document.getElementById('account-verified').checked = a.verified;
+        });
     }
-   
-    const newRequest = {
-        id: generateId(),
-        type,
-        items,
-        status: 'Pending',
-        date: new Date().toISOString(),
-        employeeEmail: currentUser.email
+    new bootstrap.Modal(document.getElementById('accountModal')).show();
+}
+
+async function handleAccountSave(e) {
+    e.preventDefault();
+    const id       = document.getElementById('account-id').value;
+    const body = {
+        firstName: document.getElementById('account-firstname').value,
+        lastName:  document.getElementById('account-lastname').value,
+        username:  document.getElementById('account-username').value,
+        password:  document.getElementById('account-password').value || undefined,
+        role:      document.getElementById('account-role').value,
+        verified:  document.getElementById('account-verified').checked
     };
-   
-    window.db.requests.push(newRequest);
-    saveToStorage();
-   
-    bootstrap.Modal.getInstance(document.getElementById('requestModal')).hide();
-    renderRequests();
-    showToast('Request submitted successfully', 'success');
+    if (!body.password) delete body.password;
+    try {
+        if (id) { await api('PUT',  `/api/admin/accounts/${id}`, body); }
+        else    { await api('POST', `/api/admin/accounts`, body); }
+        bootstrap.Modal.getInstance(document.getElementById('accountModal')).hide();
+        loadAdminAccounts();
+        showToast('Account saved!', 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
 }
 
-// Admin - Accounts
-function renderAccountsList() {
-    let html = `
-        <div class="table-responsive">
-            <table class="table table-striped">
-                <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>Email</th>
-                        <th>Role</th>
-                        <th>Verified</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-    `;
-   
-    window.db.accounts.forEach(acc => {
-        html += `
-            <tr>
-                <td>${acc.firstName} ${acc.lastName}</td>
-                <td>${acc.email}</td>
-                <td><span class="badge ${acc.role === 'admin' ? 'bg-danger' : 'bg-primary'}">${acc.role}</span></td>
-                <td>${acc.verified ? '✓' : '—'}</td>
-                <td class="action-buttons">
-                    <button class="btn btn-sm btn-primary" onclick="editAccount('${acc.id}')">Edit</button>
-                    <button class="btn btn-sm btn-warning" onclick="resetPassword('${acc.id}')">Reset PW</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteAccount('${acc.id}')">Delete</button>
-                </td>
-            </tr>
-        `;
-    });
-   
-    html += '</tbody></table></div>';
-    document.getElementById('accounts-list').innerHTML = html;
+function openResetPwModal(id) {
+    document.getElementById('reset-pw-id').value = id;
+    document.getElementById('reset-pw-input').value = '';
+    new bootstrap.Modal(document.getElementById('resetPwModal')).show();
 }
 
-function openAccountModal(accountId = null) {
-    const modal = new bootstrap.Modal(document.getElementById('accountModal'));
-    const form = document.getElementById('account-form');
-    form.reset();
-   
-    if (accountId) {
-        const account = window.db.accounts.find(acc => acc.id === accountId);
-        if (account) {
-            document.getElementById('accountModalTitle').textContent = 'Edit Account';
-            document.getElementById('account-id').value = account.id;
-            document.getElementById('account-firstname').value = account.firstName;
-            document.getElementById('account-lastname').value = account.lastName;
-            document.getElementById('account-email').value = account.email;
-            document.getElementById('account-role').value = account.role;
-            document.getElementById('account-verified').checked = account.verified;
-            document.getElementById('account-password').required = false;
-        }
-    } else {
-        document.getElementById('accountModalTitle').textContent = 'Add Account';
-        document.getElementById('account-password').required = true;
-    }
-   
-    modal.show();
+async function handleResetPassword() {
+    const id       = document.getElementById('reset-pw-id').value;
+    const password = document.getElementById('reset-pw-input').value;
+    if (!password || password.length < 6) { showToast('Min 6 characters', 'warning'); return; }
+    try {
+        await api('PUT', `/api/admin/accounts/${id}/reset-password`, { password });
+        bootstrap.Modal.getInstance(document.getElementById('resetPwModal')).hide();
+        showToast('Password reset!', 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
 }
 
-function editAccount(id) {
-    openAccountModal(id);
+async function deleteAccount(id) {
+    if (!confirm('Delete this account?')) return;
+    try {
+        await api('DELETE', `/api/admin/accounts/${id}`);
+        loadAdminAccounts();
+        showToast('Account deleted', 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
 }
 
-function handleAccountSave(e) {
-    e.preventDefault();
-   
-    const id = document.getElementById('account-id').value;
-    const firstName = document.getElementById('account-firstname').value;
-    const lastName = document.getElementById('account-lastname').value;
-    const email = document.getElementById('account-email').value;
-    const password = document.getElementById('account-password').value;
-    const role = document.getElementById('account-role').value;
-    const verified = document.getElementById('account-verified').checked;
-   
+// ─── ADMIN: DEPARTMENTS ───────────────────────────────────────────────────────
+async function loadAdminDepartments() {
+    try {
+        const list = await api('GET', '/api/departments');
+        document.getElementById('departments-list').innerHTML = `
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead><tr><th>Name</th><th>Description</th><th>Actions</th></tr></thead>
+                    <tbody>
+                        ${list.map(d => `
+                            <tr>
+                                <td>${d.name}</td>
+                                <td>${d.description}</td>
+                                <td class="action-buttons">
+                                    <button class="btn btn-sm btn-primary" onclick="openDeptModal(${d.id})">Edit</button>
+                                    <button class="btn btn-sm btn-danger"  onclick="deleteDept(${d.id})">Delete</button>
+                                </td>
+                            </tr>`).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+function openDeptModal(id = null) {
+    document.getElementById('dept-form').reset();
+    document.getElementById('dept-id').value = '';
+    document.getElementById('deptModalTitle').textContent = id ? 'Edit Department' : 'Add Department';
     if (id) {
-        // Edit existing
-        const account = window.db.accounts.find(acc => acc.id === id);
-        if (account) {
-            account.firstName = firstName;
-            account.lastName = lastName;
-            account.email = email;
-            if (password) account.password = password;
-            account.role = role;
-            account.verified = verified;
-        }
-    } else {
-        // Check if email exists
-        if (window.db.accounts.find(acc => acc.email === email)) {
-            showToast('Email already exists', 'danger');
-            return;
-        }
-       
-        // Create new
-        window.db.accounts.push({
-            id: generateId(),
-            firstName,
-            lastName,
-            email,
-            password,
-            role,
-            verified
+        api('GET', '/api/departments').then(list => {
+            const d = list.find(x => x.id === id);
+            if (!d) return;
+            document.getElementById('dept-id').value          = d.id;
+            document.getElementById('dept-name').value        = d.name;
+            document.getElementById('dept-description').value = d.description;
         });
     }
-   
-    saveToStorage();
-    bootstrap.Modal.getInstance(document.getElementById('accountModal')).hide();
-    renderAccountsList();
-    showToast('Account saved successfully', 'success');
+    new bootstrap.Modal(document.getElementById('deptModal')).show();
 }
 
-function resetPassword(id) {
-    const newPassword = prompt('Enter new password (min 6 characters):');
-    if (newPassword && newPassword.length >= 6) {
-        const account = window.db.accounts.find(acc => acc.id === id);
-        if (account) {
-            account.password = newPassword;
-            saveToStorage();
-            showToast('Password reset successfully', 'success');
-        }
-    } else if (newPassword !== null) {
-        showToast('Password must be at least 6 characters', 'danger');
-    }
-}
-
-function deleteAccount(id) {
-    if (currentUser && currentUser.id === id) {
-        showToast('Cannot delete your own account', 'danger');
-        return;
-    }
-   
-    if (confirm('Are you sure you want to delete this account?')) {
-        window.db.accounts = window.db.accounts.filter(acc => acc.id !== id);
-        saveToStorage();
-        renderAccountsList();
-        showToast('Account deleted successfully', 'success');
-    }
-}
-
-// Admin - Departments
-function renderDepartmentsList() {
-    let html = `
-        <div class="table-responsive">
-            <table class="table table-striped">
-                <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>Description</th>
-                    </tr>
-                </thead>
-                <tbody>
-    `;
-   
-    window.db.departments.forEach(dept => {
-        html += `
-            <tr>
-                <td>${dept.name}</td>
-                <td>${dept.description}</td>
-            </tr>
-        `;
-    });
-   
-    html += '</tbody></table></div>';
-    document.getElementById('departments-list').innerHTML = html;
-}
-
-// Admin - Employees
-function renderEmployeesList() {
-    let html = `
-        <div class="table-responsive">
-            <table class="table table-striped">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>User</th>
-                        <th>Position</th>
-                        <th>Department</th>
-                        <th>Hire Date</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-    `;
-   
-    window.db.employees.forEach(emp => {
-        const account = window.db.accounts.find(acc => acc.id === emp.userId);
-        const dept = window.db.departments.find(d => d.id === emp.deptId);
-       
-        html += `
-            <tr>
-                <td>${emp.employeeId}</td>
-                <td>${account ? account.email : 'N/A'}</td>
-                <td>${emp.position}</td>
-                <td>${dept ? dept.name : 'N/A'}</td>
-                <td>${new Date(emp.hireDate).toLocaleDateString()}</td>
-                <td class="action-buttons">
-                    <button class="btn btn-sm btn-primary" onclick="editEmployee('${emp.id}')">Edit</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteEmployee('${emp.id}')">Delete</button>
-                </td>
-            </tr>
-        `;
-    });
-   
-    html += '</tbody></table></div>';
-    document.getElementById('employees-list').innerHTML = html;
-}
-
-function openEmployeeModal(employeeId = null) {
-    const modal = new bootstrap.Modal(document.getElementById('employeeModal'));
-    const form = document.getElementById('employee-form');
-    form.reset();
-   
-    // Populate email dropdown
-    const emailSelect = document.getElementById('employee-email');
-    emailSelect.innerHTML = '<option value="">Select user...</option>';
-    window.db.accounts.forEach(acc => {
-        emailSelect.innerHTML += `<option value="${acc.id}">${acc.email}</option>`;
-    });
-   
-    // Populate department dropdown
-    const deptSelect = document.getElementById('employee-dept');
-    deptSelect.innerHTML = '<option value="">Select department...</option>';
-    window.db.departments.forEach(dept => {
-        deptSelect.innerHTML += `<option value="${dept.id}">${dept.name}</option>`;
-    });
-   
-    if (employeeId) {
-        const employee = window.db.employees.find(emp => emp.id === employeeId);
-        if (employee) {
-            document.getElementById('employeeModalTitle').textContent = 'Edit Employee';
-            document.getElementById('employee-id').value = employee.id;
-            document.getElementById('employee-empid').value = employee.employeeId;
-            document.getElementById('employee-email').value = employee.userId;
-            document.getElementById('employee-position').value = employee.position;
-            document.getElementById('employee-dept').value = employee.deptId;
-            document.getElementById('employee-hiredate').value = employee.hireDate;
-        }
-    } else {
-        document.getElementById('employeeModalTitle').textContent = 'Add Employee';
-    }
-   
-    modal.show();
-}
-
-function editEmployee(id) {
-    openEmployeeModal(id);
-}
-
-function handleEmployeeSave(e) {
+async function handleDeptSave(e) {
     e.preventDefault();
-   
-    const id = document.getElementById('employee-id').value;
-    const employeeId = document.getElementById('employee-empid').value;
-    const userId = document.getElementById('employee-email').value;
-    const position = document.getElementById('employee-position').value;
-    const deptId = document.getElementById('employee-dept').value;
-    const hireDate = document.getElementById('employee-hiredate').value;
-   
+    const id   = document.getElementById('dept-id').value;
+    const body = {
+        name:        document.getElementById('dept-name').value,
+        description: document.getElementById('dept-description').value
+    };
+    try {
+        if (id) { await api('PUT',  `/api/admin/departments/${id}`, body); }
+        else    { await api('POST', `/api/admin/departments`, body); }
+        bootstrap.Modal.getInstance(document.getElementById('deptModal')).hide();
+        loadAdminDepartments();
+        showToast('Department saved!', 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+async function deleteDept(id) {
+    if (!confirm('Delete this department?')) return;
+    try {
+        await api('DELETE', `/api/admin/departments/${id}`);
+        loadAdminDepartments();
+        showToast('Department deleted', 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+// ─── ADMIN: EMPLOYEES ─────────────────────────────────────────────────────────
+async function loadAdminEmployees() {
+    try {
+        const [emps, users, depts] = await Promise.all([
+            api('GET', '/api/admin/employees'),
+            api('GET', '/api/admin/accounts'),
+            api('GET', '/api/departments')
+        ]);
+        document.getElementById('employees-list').innerHTML = `
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead><tr><th>Emp ID</th><th>User</th><th>Position</th><th>Department</th><th>Hire Date</th><th>Actions</th></tr></thead>
+                    <tbody>
+                        ${emps.map(emp => {
+                            const u = users.find(x => x.id === emp.userId);
+                            const d = depts.find(x => x.id === emp.deptId);
+                            return `<tr>
+                                <td>${emp.employeeId}</td>
+                                <td>${u ? `${u.firstName} ${u.lastName}` : 'N/A'}</td>
+                                <td>${emp.position}</td>
+                                <td>${d ? d.name : 'N/A'}</td>
+                                <td>${new Date(emp.hireDate).toLocaleDateString()}</td>
+                                <td class="action-buttons">
+                                    <button class="btn btn-sm btn-primary" onclick="openEmployeeModal(${emp.id})">Edit</button>
+                                    <button class="btn btn-sm btn-danger"  onclick="deleteEmployee(${emp.id})">Delete</button>
+                                </td>
+                            </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+async function openEmployeeModal(id = null) {
+    document.getElementById('employee-form').reset();
+    document.getElementById('employee-id').value = '';
+    document.getElementById('employeeModalTitle').textContent = id ? 'Edit Employee' : 'Add Employee';
+
+    const [users, depts] = await Promise.all([
+        api('GET', '/api/admin/accounts'),
+        api('GET', '/api/departments')
+    ]);
+
+    const userSel = document.getElementById('employee-userid');
+    userSel.innerHTML = '<option value="">Select user...</option>' +
+        users.map(u => `<option value="${u.id}">${u.firstName} ${u.lastName} (${u.username})</option>`).join('');
+
+    const deptSel = document.getElementById('employee-dept');
+    deptSel.innerHTML = '<option value="">Select department...</option>' +
+        depts.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+
     if (id) {
-        // Edit existing
-        const employee = window.db.employees.find(emp => emp.id === id);
-        if (employee) {
-            employee.employeeId = employeeId;
-            employee.userId = userId;
-            employee.position = position;
-            employee.deptId = deptId;
-            employee.hireDate = hireDate;
+        const emps = await api('GET', '/api/admin/employees');
+        const emp  = emps.find(e => e.id === id);
+        if (emp) {
+            document.getElementById('employee-id').value       = emp.id;
+            document.getElementById('employee-empid').value    = emp.employeeId;
+            document.getElementById('employee-userid').value   = emp.userId;
+            document.getElementById('employee-position').value = emp.position;
+            document.getElementById('employee-dept').value     = emp.deptId;
+            document.getElementById('employee-hiredate').value = emp.hireDate;
         }
-    } else {
-        // Create new
-        window.db.employees.push({
-            id: generateId(),
-            employeeId,
-            userId,
-            position,
-            deptId,
-            hireDate
-        });
     }
-   
-    saveToStorage();
-    bootstrap.Modal.getInstance(document.getElementById('employeeModal')).hide();
-    renderEmployeesList();
-    showToast('Employee saved successfully', 'success');
+    new bootstrap.Modal(document.getElementById('employeeModal')).show();
 }
 
-function deleteEmployee(id) {
-    if (confirm('Are you sure you want to delete this employee?')) {
-        window.db.employees = window.db.employees.filter(emp => emp.id !== id);
-        saveToStorage();
-        renderEmployeesList();
-        showToast('Employee deleted successfully', 'success');
-    }
+async function handleEmployeeSave(e) {
+    e.preventDefault();
+    const id   = document.getElementById('employee-id').value;
+    const body = {
+        employeeId: document.getElementById('employee-empid').value,
+        userId:     document.getElementById('employee-userid').value,
+        position:   document.getElementById('employee-position').value,
+        deptId:     document.getElementById('employee-dept').value,
+        hireDate:   document.getElementById('employee-hiredate').value
+    };
+    try {
+        if (id) { await api('PUT',  `/api/admin/employees/${id}`, body); }
+        else    { await api('POST', `/api/admin/employees`, body); }
+        bootstrap.Modal.getInstance(document.getElementById('employeeModal')).hide();
+        loadAdminEmployees();
+        showToast('Employee saved!', 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
 }
 
-// Toast notifications
+async function deleteEmployee(id) {
+    if (!confirm('Delete this employee?')) return;
+    try {
+        await api('DELETE', `/api/admin/employees/${id}`);
+        loadAdminEmployees();
+        showToast('Employee deleted', 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+// ─── ADMIN: ALL REQUESTS ──────────────────────────────────────────────────────
+async function loadAdminRequests() {
+    try {
+        const list = await api('GET', '/api/admin/requests');
+        const el   = document.getElementById('admin-requests-list');
+        if (!list.length) {
+            el.innerHTML = `<div class="alert alert-info">No requests yet.</div>`; return;
+        }
+        el.innerHTML = `
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead><tr><th>User</th><th>Type</th><th>Items</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>
+                        ${list.map(r => `
+                            <tr>
+                                <td>${r.userFullName}<br><small class="text-muted">${r.username}</small></td>
+                                <td>${r.type}</td>
+                                <td>${r.items.map(i => `${i.name} (${i.qty})`).join(', ')}</td>
+                                <td>${new Date(r.date).toLocaleDateString()}</td>
+                                <td><span class="badge bg-${statusColor(r.status)}">${r.status}</span></td>
+                                <td class="action-buttons">
+                                    ${r.status === 'Pending' ? `
+                                        <button class="btn btn-sm btn-success" onclick="updateReqStatus(${r.id},'Approved')">Approve</button>
+                                        <button class="btn btn-sm btn-warning" onclick="updateReqStatus(${r.id},'Rejected')">Reject</button>
+                                    ` : `<span class="badge bg-${statusColor(r.status)}">${r.status}</span>`}
+                                    <button class="btn btn-sm btn-danger" onclick="deleteAdminRequest(${r.id})">Delete</button>
+                                </td>
+                            </tr>`).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+async function updateReqStatus(id, status) {
+    try {
+        await api('PUT', `/api/admin/requests/${id}/status`, { status });
+        loadAdminRequests();
+        showToast(`Request ${status.toLowerCase()}`, 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+async function deleteAdminRequest(id) {
+    if (!confirm('Delete this request?')) return;
+    try {
+        await api('DELETE', `/api/admin/requests/${id}`);
+        loadAdminRequests();
+        showToast('Request deleted', 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
+}
+
+// ─── UTILS ────────────────────────────────────────────────────────────────────
+function statusColor(s) {
+    return s === 'Approved' ? 'success' : s === 'Rejected' ? 'danger' : 'warning';
+}
+
 function showToast(message, type = 'info') {
-    const toastContainer = document.getElementById('toast-container');
-    const toastId = 'toast-' + Date.now();
-   
-    const bgClass = type === 'success' ? 'bg-success' :
-                   type === 'danger' ? 'bg-danger' :
-                   type === 'warning' ? 'bg-warning' :
-                   'bg-info';
-   
-    const toastHtml = `
-        <div id="${toastId}" class="toast align-items-center text-white ${bgClass} border-0" role="alert">
+    const id = 'toast-' + Date.now();
+    const bg = { success: 'bg-success', danger: 'bg-danger', warning: 'bg-warning' }[type] || 'bg-info';
+    document.getElementById('toast-container').insertAdjacentHTML('beforeend', `
+        <div id="${id}" class="toast align-items-center text-white ${bg} border-0" role="alert">
             <div class="d-flex">
-                <div class="toast-body">
-                    ${message}
-                </div>
+                <div class="toast-body">${message}</div>
                 <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
             </div>
-        </div>
-    `;
-   
-    toastContainer.insertAdjacentHTML('beforeend', toastHtml);
-    const toastElement = document.getElementById(toastId);
-    const toast = new bootstrap.Toast(toastElement);
-    toast.show();
-   
-    toastElement.addEventListener('hidden.bs.toast', function() {
-        toastElement.remove();
-    });
-}
-
-// Admin - All Requests Management
-function renderAdminRequestsList() {
-    const allRequests = window.db.requests;
-   
-    if (allRequests.length === 0) {
-        document.getElementById('admin-requests-list').innerHTML = `
-            <div class="alert alert-info">No requests have been submitted yet.</div>
-        `;
-        return;
-    }
-   
-    let html = `
-        <div class="table-responsive">
-            <table class="table table-striped">
-                <thead>
-                    <tr>
-                        <th>User</th>
-                        <th>Type</th>
-                        <th>Items</th>
-                        <th>Date</th>
-                        <th>Status</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-    `;
-   
-    allRequests.forEach(req => {
-        const statusClass = req.status === 'Pending' ? 'warning' :
-                          req.status === 'Approved' ? 'success' : 'danger';
-        const itemsList = req.items.map(item => `${item.name} (${item.qty})`).join(', ');
-        const user = window.db.accounts.find(acc => acc.email === req.employeeEmail);
-        const userName = user ? `${user.firstName} ${user.lastName}` : req.employeeEmail;
-       
-        html += `
-            <tr>
-                <td>${userName}<br><small class="text-muted">${req.employeeEmail}</small></td>
-                <td>${req.type}</td>
-                <td>${itemsList}</td>
-                <td>${new Date(req.date).toLocaleDateString()}</td>
-                <td><span class="badge bg-${statusClass}">${req.status}</span></td>
-                <td class="action-buttons">
-                    ${req.status === 'Pending' ? `
-                        <button class="btn btn-sm btn-success" onclick="updateRequestStatus('${req.id}', 'Approved')">Approve</button>
-                        <button class="btn btn-sm btn-danger" onclick="updateRequestStatus('${req.id}', 'Rejected')">Reject</button>
-                    ` : `
-                        <button class="btn btn-sm btn-secondary" disabled>${req.status}</button>
-                    `}
-                    <button class="btn btn-sm btn-danger" onclick="deleteRequest('${req.id}')">Delete</button>
-                </td>
-            </tr>
-        `;
-    });
-   
-    html += '</tbody></table></div>';
-    document.getElementById('admin-requests-list').innerHTML = html;
-}
-
-function updateRequestStatus(requestId, newStatus) {
-    const request = window.db.requests.find(req => req.id === requestId);
-    if (request) {
-        request.status = newStatus;
-        saveToStorage();
-        renderAdminRequestsList();
-        showToast(`Request ${newStatus.toLowerCase()}`, 'success');
-    }
-}
-
-function deleteRequest(requestId) {
-    if (confirm('Are you sure you want to delete this request?')) {
-        window.db.requests = window.db.requests.filter(req => req.id !== requestId);
-        saveToStorage();
-        renderAdminRequestsList();
-        showToast('Request deleted successfully', 'success');
-    }
+        </div>`);
+    const el = document.getElementById(id);
+    new bootstrap.Toast(el).show();
+    el.addEventListener('hidden.bs.toast', () => el.remove());
 }
